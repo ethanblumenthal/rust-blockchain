@@ -17,31 +17,63 @@ pub trait Trait: system::Trait {
 	type Event: From<Event> + Into<<Self as system::Trait>::Event>;
 }
 
-#[cfg(feature = "std", derive(Serialize, Deserialize))]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
-pub struct TransactionInput {
-    pub outpoint: H256, // reference to UTXO to be spent
-    pub sigscript: H512, // proof
-}
-
-#[cfg(feature = "std", derive(Serialize, Deserialize))]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
-pub struct TransactionOutput {
-    pub value: Value, // value associated with UTXO
-    pub pubkey: H256, // public key assoacited with this output
-}
-
-#[cfg(feature = "std", derive(Serialize, Deserialize))]
+/// Single transaction to be dispatched
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
 pub struct Transaction {
+    /// UTXOs to be used as inputs for current transaction
     pub inputs: Vec<TransactionInput>,
+    
+    /// UTXOs to be created as a result of current transaction dispatch
     pub outputs: Vec<TransactionOutput>,
 }
 
-decl_storage! {
-	trait Store for Module<T: Trait> as Utxo {
+/// Single transaction input that refers to one UTXO
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
+pub struct TransactionInput {
+    /// Reference to an UTXO to be spent
+    pub outpoint: H256,
+    
+    /// Proof that transaction owner is authorized to spend referred UTXO & 
+    /// that the entire transaction is untampered
+    pub sigscript: H512,
+}
 
-	}
+/// Single transaction output to create upon transaction dispatch
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
+pub struct TransactionOutput {
+    /// Value associated with this output
+    pub value: Value,
+
+    /// Public key associated with this output. In order to spend this output
+	/// owner must provide a proof by hashing the whole `Transaction` and
+	/// signing it with a corresponding private key.
+    pub pubkey: H256,
+}
+
+decl_storage! {
+    trait Store for Module<T: Trait> as Utxo {
+        /// All valid unspent transaction outputs are stored in this map.
+        /// Initial set of UTXO is populated from the list stored in genesis.
+        UtxoStore build(|config: &GenesisConfig| {
+            config.genesis_utxos
+                .iter()
+                .cloned()
+                .map(|u| (BlakeTwo256::hash_of(&u), u))
+                .collect::<Vec<_>>()
+        }): map H256 => Option<TransactionOutput>;
+
+        /// Total reward value to be redistributed among authorities.
+        /// It is accumulated from transactions during block execution
+        /// and then dispersed to validators on block finalization.
+        pub RewardTotal get(reward_total): Value;
+    }
+
+    add_extra_genesis {
+        config(genesis_utxos): Vec<TransactionOutput>;
+    }
 }
 
 // External functions: callable by the end user

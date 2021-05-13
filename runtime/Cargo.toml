@@ -1,10 +1,10 @@
 [package]
-authors = ['Substrate DevHub <https://github.com/substrate-developer-hub>']
+authors = ['Ethan Blumenthal <https://github.com/ethanblumenthal>']
 edition = '2018'
-homepage = 'https://substrate.dev'
+homepage = 'https://ethanblumenthal.net/'
 license = 'Unlicense'
 name = 'utxo-runtime'
-repository = 'https://github.com/substrate-developer-hub/substrate-node-template/'
+repository = 'https://github.com/ethanblumenthal/utxo-ledger'
 version = '3.0.0'
 
 [package.metadata.docs.rs]
