@@ -85,7 +85,7 @@ decl_module! {
 
         /// Dispatch a single transaction and update UTXO set accordingly
         pub fn spend(_origin, transaction: Transaction) -> DispatchResult {
-            let transaction_validity = Self::validate_transaction(&transaction)?;
+            let reward = Self::validate_transaction(&transaction)?;
             
             Self::update_storage(&transaction, transaction_validity.priority as u128)?;
 
@@ -114,6 +114,80 @@ decl_event! {
 
 // "Internal" functions, callable by code.
 impl<T: Trait> Module<T> {
+	 // Strips a transaction of its Signature fields by replacing value with ZERO-initialized fixed hash.
+	 pub fn get_simple_transaction(transaction: &Transaction) -> Vec<u8> {//&'a [u8] {
+        let mut trx = transaction.clone();
+        for input in trx.inputs.iter_mut() {
+            input.sigscript = H512::zero();
+        }
+
+        trx.encode()
+    }
+	
+	pub fn validate_transaction(transaction: &Transaction) -> Result<ValidTransaction, &'static str> {
+        // Check basic requirements
+        ensure!(!transaction.inputs.is_empty(), "no inputs");
+        ensure!(!transaction.outputs.is_empty(), "no outputs");
+
+        {
+            let input_set: BTreeMap<_, ()> =transaction.inputs.iter().map(|input| (input, ())).collect();
+            ensure!(input_set.len() == transaction.inputs.len(), "each input must only be used once");
+        }
+        {
+            let output_set: BTreeMap<_, ()> = transaction.outputs.iter().map(|output| (output, ())).collect();
+            ensure!(output_set.len() == transaction.outputs.len(), "each output must be defined only once");
+        }
+
+        let mut total_input: Value = 0;
+        let mut total_output: Value = 0;
+        let mut output_index: u64 = 0;
+        let simple_transaction = Self::get_simple_transaction(transaction);
+
+        // Variables sent to transaction pool
+        let mut missing_utxos = Vec::new();
+        let mut new_utxos = Vec::new();
+        let mut reward = 0;
+
+        // Check that inputs are valid
+        for input in transaction.inputs.iter() {
+            if let Some(input_utxo) = <UtxoStore>::get(&input.outpoint) {
+                ensure!(sp_io::crypto::sr25519_verify(
+                    &Signature::from_raw(*input.sigscript.as_fixed_bytes()),
+                    &simple_transaction,
+                    &Public::from_h256(input_utxo.pubkey)
+                ), "signature must be valid" );
+                total_input = total_input.checked_add(input_utxo.value).ok_or("input value overflow")?;
+            } else {
+                missing_utxos.push(input.outpoint.clone().as_fixed_bytes().to_vec());
+            }
+        }
+
+        // Check that outputs are valid
+        for output in transaction.outputs.iter() {
+            ensure!(output.value > 0, "output value must be nonzero");
+            let hash = BlakeTwo256::hash_of(&(&transaction.encode(), output_index));
+            output_index = output_index.checked_add(1).ok_or("output index overflow")?;
+            ensure!(!<UtxoStore>::exists(hash), "output already exists");
+            total_output = total_output.checked_add(output.value).ok_or("output value overflow")?;
+            new_utxos.push(hash.as_fixed_bytes().to_vec());
+        }
+        
+        // If no race condition, check the math
+        if missing_utxos.is_empty() {
+            ensure!( total_input >= total_output, "output value must not exceed input value");
+            reward = total_input.checked_sub(total_output).ok_or("reward underflow")?;
+        }
+
+        // Returns transaction details
+        Ok(ValidTransaction {
+            requires: missing_utxos,
+            provides: new_utxos,
+            priority: reward as u64,
+            longevity: TransactionLongevity::max_value(),
+            propagate: true,
+        })
+    }
+
 	/// Update storage to reflect changes made by transaction
     /// Where each utxo key is a hash of the entire transaction and its order in the TransactionOutputs vector
     fn update_storage(transaction: &Transaction, reward: Value) -> DispatchResult {
