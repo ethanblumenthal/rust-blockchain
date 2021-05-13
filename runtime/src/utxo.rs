@@ -93,6 +93,15 @@ decl_module! {
 
             Ok(())
         }
+
+		/// Handler called by the system on block finalization
+        fn on_finalize() {
+            let auth:Vec<_> = Aura::authorities().iter().map(|x| {
+                let r: &Public = x.as_ref();
+                r.0.into()
+            }).collect();
+            Self::disperse_reward(&auth);
+        }
 	}
 }
 
@@ -103,23 +112,65 @@ decl_event! {
     }
 }
 
-imp<T: Trait> Module<T> {
-	fn update_storage(transaction: &Transaction) -> DispatchResult {
-		// Remove input UTXO form store
-		for input in &transaction.inputs {
-			<UtxoStore>::remove(input.outpoint);
-		}
+// "Internal" functions, callable by code.
+impl<T: Trait> Module<T> {
+	/// Update storage to reflect changes made by transaction
+    /// Where each utxo key is a hash of the entire transaction and its order in the TransactionOutputs vector
+    fn update_storage(transaction: &Transaction, reward: Value) -> DispatchResult {
+        // Calculate new reward total
+        let new_total = <RewardTotal>::get()
+            .checked_add(reward)
+            .ok_or("Reward overflow")?;
+        <RewardTotal>::put(new_total);
 
-		// Create new UTXOs in store
-		let mut index: u64 = 0;
-		for output in &transaction.outputs {
-			let hash = BlakeTwo256::hash_of( (&transaction.encode(), index) );
-			index = index.check_add(1).ok_or("output index overflow")?
-			<UtxoStore>::insert(hash, output);
-		}
+        // Removing spent UTXOs
+        for input in &transaction.inputs {
+            <UtxoStore>::remove(input.outpoint);
+        }
 
-		OK(())
-	}
+        let mut index: u64 = 0;
+        for output in &transaction.outputs {
+            let hash = BlakeTwo256::hash_of(&(&transaction.encode(), index));
+            index = index.checked_add(1).ok_or("output index overflow")?;
+            <UtxoStore>::insert(hash, output);
+        }
+
+        Ok(())
+    }
+
+    /// Redistribute combined reward value evenly among chain authorities
+    fn disperse_reward(authorities: &[H256]) {
+        let reward = <RewardTotal>::take();
+        let share_value: Value = reward
+            .checked_div(authorities.len() as Value)
+            .ok_or("No authorities")
+            .unwrap();
+        if share_value == 0 { return }
+
+        let remainder = reward
+            .checked_sub(share_value * authorities.len() as Value)
+            .ok_or("Sub underflow")
+            .unwrap();
+        <RewardTotal>::put(remainder as Value);
+
+        for authority in authorities {
+            let utxo = TransactionOutput {
+                value: share_value,
+                pubkey: *authority,
+            };
+
+            let hash = BlakeTwo256::hash_of(&(&utxo, 
+                        <system::Module<T>>::block_number().saturated_into::<u64>()));
+
+            if !<UtxoStore>::exists(hash) {
+                <UtxoStore>::insert(hash, utxo);
+                sp_runtime::print("transaction reward sent to");
+                sp_runtime::print(hash.as_fixed_bytes() as &[u8]);
+            } else {
+                sp_runtime::print("transaction reward wasted due to hash collision");
+            }
+        }
+    }
 }
 
 /// Tests for this module
