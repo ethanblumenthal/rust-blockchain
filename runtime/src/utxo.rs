@@ -40,6 +40,8 @@ pub struct TransactionInput {
     pub sigscript: H512,
 }
 
+pub type Value = u128;
+
 /// Single transaction output to create upon transaction dispatch
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Default, Clone, Encode, Decode, Hash, Debug)]
@@ -78,15 +80,45 @@ decl_storage! {
 
 // External functions: callable by the end user
 decl_module! {
-	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		fn deposit_event() = default;
+    pub struct Module<T: Trait> for enum Call where origin: T::Origin {
+        fn deposit_event() = default;
 
+        /// Dispatch a single transaction and update UTXO set accordingly
+        pub fn spend(_origin, transaction: Transaction) -> DispatchResult {
+            let transaction_validity = Self::validate_transaction(&transaction)?;
+            
+            Self::update_storage(&transaction, transaction_validity.priority as u128)?;
+
+            Self::deposit_event(Event::TransactionSuccess(transaction));
+
+            Ok(())
+        }
 	}
 }
 
 decl_event! {
-	pub enum Event {
+    pub enum Event {
+        /// Transaction was executed successfully
+        TransactionSuccess(Transaction),
+    }
+}
 
+imp<T: Trait> Module<T> {
+	fn update_storage(transaction: &Transaction) -> DispatchResult {
+		// Remove input UTXO form store
+		for input in &transaction.inputs {
+			<UtxoStore>::remove(input.outpoint);
+		}
+
+		// Create new UTXOs in store
+		let mut index: u64 = 0;
+		for output in &transaction.outputs {
+			let hash = BlakeTwo256::hash_of( (&transaction.encode(), index) );
+			index = index.check_add(1).ok_or("output index overflow")?
+			<UtxoStore>::insert(hash, output);
+		}
+
+		OK(())
 	}
 }
 
